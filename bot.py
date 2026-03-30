@@ -39,16 +39,24 @@ def get_open_shift(user_id: int):
     cursor.execute("SELECT start_time FROM fichajes WHERE user_id = ?", (user_id,))
     return cursor.fetchone()
 
-def open_shift(user_id: int, start_time: str):
-    cursor.execute("""
-        INSERT OR REPLACE INTO fichajes (user_id, start_time)
-        VALUES (?, ?)
-    """, (user_id, start_time))
+def open_shift(user_id: int, start_time: str) -> int:
+    """
+    Abre turno si no existe.
+    Devuelve 1 si se insertó, 0 si ya había un turno abierto.
+    """
+    cursor.execute(
+        "INSERT OR IGNORE INTO fichajes (user_id, start_time) VALUES (?, ?)",
+        (user_id, start_time),
+    )
+    inserted = cursor.rowcount
     conn.commit()
+    return inserted
 
-def close_shift(user_id: int):
+def close_shift(user_id: int) -> int:
     cursor.execute("DELETE FROM fichajes WHERE user_id = ?", (user_id,))
+    deleted = cursor.rowcount
     conn.commit()
+    return deleted
 
 def format_duration(seconds: int):
     horas = seconds // 3600
@@ -70,13 +78,28 @@ class FichajeView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)  # para que no expire
 
+    async def _safe_respond(self, interaction: discord.Interaction, *, embed, ephemeral: bool):
+        """
+        Evita que el bot spamee trazas cuando la interacción ya no es válida
+        (p.ej. por doble ejecución o lentitud en producción).
+        """
+        try:
+            if getattr(interaction.response, "is_done", lambda: False)():
+                await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+        except (discord.NotFound, discord.InteractionResponded, AttributeError):
+            # NotFound (10062): Unknown interaction (token expirado o ya usado)
+            # InteractionResponded: ya respondida (según versión de discord.py)
+            return
+
     @discord.ui.button(label="Entrar", style=discord.ButtonStyle.success, custom_id="fichaje_entrar")
     async def entrar(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_id = interaction.user.id
         now = datetime.now(timezone.utc)
 
-        existing = get_open_shift(user_id)
-        if existing:
+        inserted = open_shift(user_id, now.isoformat())
+        if inserted == 0:
             em = discord.Embed(
                 title="⚠️ Ya tienes un turno activo",
                 description=(
@@ -86,10 +109,8 @@ class FichajeView(discord.ui.View):
                 color=COLOR_AVISO,
             )
             em.set_footer(text="Solo tú ves este mensaje")
-            await interaction.response.send_message(embed=em, ephemeral=True)
+            await self._safe_respond(interaction, embed=em, ephemeral=True)
             return
-
-        open_shift(user_id, now.isoformat())
 
         em = discord.Embed(
             title="🟢 Turno iniciado",
@@ -100,7 +121,7 @@ class FichajeView(discord.ui.View):
             color=COLOR_OK,
         )
         em.set_footer(text="¡Buen turno!")
-        await interaction.response.send_message(embed=em, ephemeral=True)
+        await self._safe_respond(interaction, embed=em, ephemeral=True)
 
     @discord.ui.button(label="Salir", style=discord.ButtonStyle.danger, custom_id="fichaje_salir")
     async def salir(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -118,7 +139,7 @@ class FichajeView(discord.ui.View):
                 color=COLOR_AVISO,
             )
             em.set_footer(text="Solo tú ves este mensaje")
-            await interaction.response.send_message(embed=em, ephemeral=True)
+            await self._safe_respond(interaction, embed=em, ephemeral=True)
             return
 
         start_time = datetime.fromisoformat(existing[0])
@@ -127,8 +148,23 @@ class FichajeView(discord.ui.View):
 
         horas, minutos, segundos = format_duration(total_seconds)
 
-        # borrar turno abierto
-        close_shift(user_id)
+        # borrar turno abierto (si ya lo cerró otro callback casi a la vez,
+        # no enviamos el log dos veces).
+        deleted = close_shift(user_id)
+        if deleted == 0:
+            # Compatibilidad: si `is_done()` no existe, asumimos que no.
+            if not getattr(interaction.response, "is_done", lambda: False)():
+                em = discord.Embed(
+                    title="🟡 Turno ya cerrado",
+                    description=(
+                        "El turno ya fue finalizado por otra acción.\n\n"
+                        "Si necesitas, pulsa **Entrar** para iniciar de nuevo."
+                    ),
+                    color=COLOR_AVISO,
+                )
+                em.set_footer(text="Solo tú ves este mensaje")
+                await self._safe_respond(interaction, embed=em, ephemeral=True)
+            return
 
         # buscar canal de logs
         log_channel = interaction.client.get_channel(LOG_CHANNEL_ID)
@@ -141,7 +177,7 @@ class FichajeView(discord.ui.View):
                 ),
                 color=COLOR_ALERTA,
             )
-            await interaction.response.send_message(embed=em, ephemeral=True)
+            await self._safe_respond(interaction, embed=em, ephemeral=True)
             return
 
         embed = discord.Embed(
@@ -182,15 +218,24 @@ class FichajeView(discord.ui.View):
             color=COLOR_OK,
         )
         em_done.set_footer(text="Solo tú ves este mensaje")
-        await interaction.response.send_message(embed=em_done, ephemeral=True)
+        await self._safe_respond(interaction, embed=em_done, ephemeral=True)
+
+# Reutilizamos una sola instancia para evitar que el mismo `custom_id` quede
+# registrado dos veces (y se ejecute el callback duplicado).
+fichaje_view = FichajeView()
+view_added = False
 
 # =========================
 # EVENTOS
 # =========================
 @bot.event
 async def on_ready():
-    # registrar la vista persistente
-    bot.add_view(FichajeView())
+    global view_added
+    # Registrar la vista persistente solo una vez (on_ready puede repetirse
+    # si hay reconexiones).
+    if not view_added:
+        bot.add_view(fichaje_view)
+        view_added = True
 
     try:
         guild = discord.Object(id=GUILD_ID)
@@ -224,7 +269,7 @@ async def panel_fichaje(interaction: discord.Interaction):
         embed.set_footer(text=footer_text, icon_url=interaction.guild.icon.url)
     else:
         embed.set_footer(text=footer_text)
-    await interaction.response.send_message(embed=embed, view=FichajeView())
+    await interaction.response.send_message(embed=embed, view=fichaje_view)
 
 # =========================
 # EJECUCIÓN
