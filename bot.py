@@ -137,6 +137,13 @@ def get_totals_by_user(include_open_shifts: bool = True):
 
     return totals
 
+def reset_registros():
+    cursor.execute("SELECT COUNT(*) FROM registros")
+    (count_before,) = cursor.fetchone()
+    cursor.execute("DELETE FROM registros")
+    conn.commit()
+    return int(count_before)
+
 # Colores para embeds (coherentes en todo el bot)
 COLOR_PANEL = discord.Color.from_rgb(88, 101, 242)   # blurple
 COLOR_OK = discord.Color.from_rgb(46, 204, 113)      # verde éxito
@@ -364,6 +371,27 @@ async def totales_turnos(interaction: discord.Interaction):
         )
         em.set_footer(text="Solo turnos cerrados (según el registro)")
         await interaction.followup.send(embed=em, ephemeral=True)
+
+# =========================
+# SLASH COMMAND: RESET DEL REGISTRO
+# =========================
+@bot.tree.command(
+    name="reset",
+    description="Borra todos los turnos guardados en el registro (registros)",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def reset(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    deleted = reset_registros()
+
+    em = discord.Embed(
+        title="🧹 Registro reseteado",
+        description=f"Se borraron **{deleted}** registros de la tabla `registros`.",
+        color=COLOR_OK if deleted > 0 else COLOR_AVISO,
+    )
+    await interaction.followup.send(embed=em, ephemeral=True)
 
 # =========================
 # EJECUCIÓN
