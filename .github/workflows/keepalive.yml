@@ -13,5 +13,26 @@ jobs:
       - name: Ping Render health endpoint
         run: |
           PING_URL="https://bot-turnos-4fd5.onrender.com/health"
-          curl -fsS --max-time 20 "$PING_URL" > /dev/null
+          echo "Primera llamada (puede tardar si hubo cold start)..."
+          curl -fsS \
+            --retry 5 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            --connect-timeout 15 \
+            --max-time 120 \
+            -A "github-actions-keepalive" \
+            "$PING_URL" > /dev/null
+
+          sleep 10
+
+          echo "Segunda llamada de confirmación..."
+          curl -fsS \
+            --retry 3 \
+            --retry-delay 3 \
+            --retry-all-errors \
+            --connect-timeout 10 \
+            --max-time 60 \
+            -A "github-actions-keepalive" \
+            "$PING_URL" > /dev/null
+
           echo "Ping OK: $PING_URL"
