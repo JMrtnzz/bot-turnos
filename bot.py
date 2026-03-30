@@ -1,3 +1,4 @@
+import asyncio
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -31,6 +32,46 @@ conn.commit()
 # =========================
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# =========================
+# SERVIDOR WEB (Render "Web Service")
+# =========================
+# Render exige que el proceso se "bind-ee" a al menos un puerto.
+# Como este bot no necesita servir páginas, exponemos un endpoint mínimo de salud.
+async def http_health_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    try:
+        # Leemos hasta el final de headers HTTP para no bloquear indefinidamente.
+        await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5)
+    except Exception:
+        # Si el cliente se corta o no envía headers completos, igual devolvemos OK.
+        pass
+
+    body = b"OK"
+    response = (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"Content-Length: 2\r\n"
+        b"\r\n"
+        + body
+    )
+    writer.write(response)
+    await writer.drain()
+    writer.close()
+    # wait_closed() puede fallar si el cliente cierra rápido
+    with contextlib.suppress(Exception):
+        await writer.wait_closed()
+
+
+async def start_web_server():
+    port = int(os.getenv("PORT", "8080"))
+    server = await asyncio.start_server(http_health_handler, host="0.0.0.0", port=port)
+    print(f"Web server escuchando en 0.0.0.0:{port}")
+    return server
+
+
+# contextlib solo se usa para suprimir errores al cerrar sockets
+import contextlib
+
 
 # =========================
 # FUNCIONES AUXILIARES
@@ -229,4 +270,21 @@ async def panel_fichaje(interaction: discord.Interaction):
 # =========================
 # EJECUCIÓN
 # =========================
-bot.run(TOKEN)
+if not TOKEN:
+    raise RuntimeError("TOKEN no está configurado. Asegúrate de definir la variable de entorno TOKEN.")
+
+
+async def main():
+    # 1) Levantamos el servidor HTTP mínimo para Render.
+    server = await start_web_server()
+    try:
+        # 2) Arrancamos el bot (no devuelve).
+        await bot.start(TOKEN)
+    finally:
+        # Si el proceso termina, cerramos el servidor HTTP.
+        server.close()
+        await server.wait_closed()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
