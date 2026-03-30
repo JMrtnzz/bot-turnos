@@ -27,6 +27,18 @@ CREATE TABLE IF NOT EXISTS fichajes (
 """)
 conn.commit()
 
+# Historial de turnos cerrados (para reportes y totales)
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS registros (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    start_time TEXT NOT NULL,
+    end_time TEXT NOT NULL,
+    seconds INTEGER NOT NULL
+)
+""")
+conn.commit()
+
 # =========================
 # INTENTS
 # =========================
@@ -91,11 +103,39 @@ def close_shift(user_id: int):
     cursor.execute("DELETE FROM fichajes WHERE user_id = ?", (user_id,))
     conn.commit()
 
+def save_shift_record(user_id: int, start_time: str, end_time: str, seconds: int):
+    cursor.execute(
+        """
+        INSERT INTO registros (user_id, start_time, end_time, seconds)
+        VALUES (?, ?, ?, ?)
+        """,
+        (user_id, start_time, end_time, seconds),
+    )
+    conn.commit()
+
 def format_duration(seconds: int):
     horas = seconds // 3600
     minutos = (seconds % 3600) // 60
     segundos = seconds % 60
     return horas, minutos, segundos
+
+def get_totals_by_user(include_open_shifts: bool = True):
+    cursor.execute("SELECT user_id, COALESCE(SUM(seconds), 0) FROM registros GROUP BY user_id")
+    totals = {int(user_id): int(total_seconds) for (user_id, total_seconds) in cursor.fetchall()}
+
+    if include_open_shifts:
+        now = datetime.now(timezone.utc)
+        cursor.execute("SELECT user_id, start_time FROM fichajes")
+        for user_id, start_time in cursor.fetchall():
+            try:
+                start_dt = datetime.fromisoformat(start_time)
+                running = int((now - start_dt).total_seconds())
+                totals[int(user_id)] = totals.get(int(user_id), 0) + max(0, running)
+            except Exception:
+                # Si algún registro estuviera corrupto, no rompe el reporte.
+                totals[int(user_id)] = totals.get(int(user_id), 0)
+
+    return totals
 
 # Colores para embeds (coherentes en todo el bot)
 COLOR_PANEL = discord.Color.from_rgb(88, 101, 242)   # blurple
@@ -170,6 +210,14 @@ class FichajeView(discord.ui.View):
 
         # borrar turno abierto
         close_shift(user_id)
+
+        # guardar historial del turno cerrado
+        save_shift_record(
+            user_id=user_id,
+            start_time=start_time.isoformat(),
+            end_time=now.isoformat(),
+            seconds=total_seconds,
+        )
 
         # buscar canal de logs
         log_channel = interaction.client.get_channel(LOG_CHANNEL_ID)
@@ -266,6 +314,56 @@ async def panel_fichaje(interaction: discord.Interaction):
     else:
         embed.set_footer(text=footer_text)
     await interaction.response.send_message(embed=embed, view=FichajeView())
+
+# =========================
+# SLASH COMMAND: TOTALES DEL REGISTRO
+# =========================
+@bot.tree.command(
+    name="totales_turnos",
+    description="Muestra el total acumulado (h/m/s) de cada usuario según el registro",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def totales_turnos(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    totals = get_totals_by_user(include_open_shifts=False)
+    if not totals:
+        em = discord.Embed(
+            title="📊 Totales de turnos",
+            description="Aún no hay registros guardados.",
+            color=COLOR_AVISO,
+        )
+        await interaction.followup.send(embed=em, ephemeral=True)
+        return
+
+    # Ordenar por más tiempo primero
+    ordered = sorted(totals.items(), key=lambda x: x[1], reverse=True)
+
+    lines = []
+    for user_id, seconds in ordered:
+        h, m, s = format_duration(int(seconds))
+        lines.append(f"<@{user_id}> — **`{h}h`** **`{m}m`** **`{s}s`**")
+
+    # Discord: límite de 4096 chars en descripción de embed
+    chunks = []
+    current = ""
+    for line in lines:
+        if len(current) + len(line) + 1 > 3500:  # margen para seguridad
+            chunks.append(current.rstrip())
+            current = ""
+        current += line + "\n"
+    if current.strip():
+        chunks.append(current.rstrip())
+
+    for idx, chunk in enumerate(chunks, start=1):
+        em = discord.Embed(
+            title="📊 Totales de turnos" if len(chunks) == 1 else f"📊 Totales de turnos ({idx}/{len(chunks)})",
+            description=chunk,
+            color=COLOR_PANEL,
+        )
+        em.set_footer(text="Solo turnos cerrados (según el registro)")
+        await interaction.followup.send(embed=em, ephemeral=True)
 
 # =========================
 # EJECUCIÓN
