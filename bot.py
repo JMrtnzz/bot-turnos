@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import sqlite3
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 # =========================
 # CONFIGURACIÓN
@@ -22,18 +22,6 @@ cursor.execute("""
 CREATE TABLE IF NOT EXISTS fichajes (
     user_id INTEGER PRIMARY KEY,
     start_time TEXT
-)
-""")
-conn.commit()
-
-# Historial de turnos cerrados (para poder sumar horas)
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS historial_fichajes (
-    shift_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    start_time TEXT NOT NULL,
-    end_time TEXT NOT NULL,
-    duration_seconds INTEGER NOT NULL
 )
 """)
 conn.commit()
@@ -60,13 +48,6 @@ def open_shift(user_id: int, start_time: str):
 
 def close_shift(user_id: int):
     cursor.execute("DELETE FROM fichajes WHERE user_id = ?", (user_id,))
-    conn.commit()
-
-def add_shift_history(user_id: int, start_time: str, end_time: str, duration_seconds: int):
-    cursor.execute("""
-        INSERT INTO historial_fichajes (user_id, start_time, end_time, duration_seconds)
-        VALUES (?, ?, ?, ?)
-    """, (user_id, start_time, end_time, duration_seconds))
     conn.commit()
 
 def format_duration(seconds: int):
@@ -145,14 +126,6 @@ class FichajeView(discord.ui.View):
         total_seconds = int(duration.total_seconds())
 
         horas, minutos, segundos = format_duration(total_seconds)
-
-        # Guardar historial antes de borrar el turno abierto
-        add_shift_history(
-            user_id=user_id,
-            start_time=existing[0],
-            end_time=now.isoformat(),
-            duration_seconds=total_seconds,
-        )
 
         # borrar turno abierto
         close_shift(user_id)
@@ -252,97 +225,6 @@ async def panel_fichaje(interaction: discord.Interaction):
     else:
         embed.set_footer(text=footer_text)
     await interaction.response.send_message(embed=embed, view=FichajeView())
-
-# =========================
-# SLASH COMMAND ADMIN: HORAS
-# =========================
-@bot.tree.command(
-    name="admin_horas",
-    description="Muestra total_horas y horas_semana (últimos 7 días). Solo administradores.",
-    guild=discord.Object(id=GUILD_ID),
-)
-@app_commands.checks.has_permissions(administrator=True)
-async def admin_horas(interaction: discord.Interaction, max_usuarios: app_commands.Range[int, 1, 50] = 25):
-    now_dt = datetime.now(timezone.utc)
-    cutoff_dt = (now_dt - timedelta(days=7)).replace(microsecond=0)
-
-    # SQLite: sumas por usuario (total, todo el historial)
-    cursor.execute("""
-        SELECT user_id, SUM(duration_seconds) as total_seconds
-        FROM historial_fichajes
-        GROUP BY user_id
-    """)
-    totals_rows = cursor.fetchall()
-    total_seconds_by_user = {int(r[0]): int(r[1]) for r in totals_rows if r[1] is not None}
-
-    # Última semana: sumamos SOLO la superposición de cada turno con [cutoff, now]
-    cursor.execute("""
-        SELECT user_id, start_time, end_time
-        FROM historial_fichajes
-        WHERE end_time > ?
-    """, (cutoff_dt.isoformat(),))
-    week_rows = cursor.fetchall()
-
-    weekly_seconds_by_user = {}
-    for user_id, start_time_str, end_time_str in week_rows:
-        start_dt = datetime.fromisoformat(start_time_str)
-        end_dt = datetime.fromisoformat(end_time_str)
-
-        overlap_start = max(start_dt, cutoff_dt)
-        overlap_end = min(end_dt, now_dt)
-        overlap_seconds = int((overlap_end - overlap_start).total_seconds())
-        if overlap_seconds > 0:
-            weekly_seconds_by_user[int(user_id)] = weekly_seconds_by_user.get(int(user_id), 0) + overlap_seconds
-
-    # Unimos usuarios presentes en total y/o semana
-    user_ids = set(total_seconds_by_user.keys()) | set(weekly_seconds_by_user.keys())
-    if not user_ids:
-        em = discord.Embed(
-            title="Sin datos",
-            description="Aún no hay turnos cerrados en el historial.",
-            color=COLOR_AVISO,
-        )
-        await interaction.response.send_message(embed=em, ephemeral=True)
-        return
-
-    def to_hm(seconds: int):
-        h, m, _ = format_duration(max(0, seconds))
-        return h, m
-
-    # Ordenamos por horas de la semana (desc)
-    sorted_users = sorted(
-        user_ids,
-        key=lambda uid: weekly_seconds_by_user.get(uid, 0),
-        reverse=True,
-    )[:max_usuarios]
-
-    embed = discord.Embed(
-        title="📊 Horas (Admin)",
-        description="`total_horas` = todo el historial | `horas_semana` = últimos 7 días",
-        color=COLOR_PANEL,
-    )
-
-    for uid in sorted_users:
-        total_seconds = total_seconds_by_user.get(uid, 0)
-        week_seconds = weekly_seconds_by_user.get(uid, 0)
-
-        total_h, total_m = to_hm(total_seconds)
-        week_h, week_m = to_hm(week_seconds)
-
-        member = interaction.guild.get_member(uid) if interaction.guild else None
-        name = member.display_name if member else f"ID {uid}"
-
-        embed.add_field(
-            name=name,
-            value=f"Total: **{total_h}h {total_m}m**\nSemana: **{week_h}h {week_m}m**",
-            inline=False,
-        )
-
-    remaining = len(user_ids) - len(sorted_users)
-    if remaining > 0:
-        embed.set_footer(text=f"Mostrando {len(sorted_users)}/{len(user_ids)} usuarios (faltan {remaining}).")
-
-    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # =========================
 # EJECUCIÓN
