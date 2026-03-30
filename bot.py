@@ -66,42 +66,69 @@ COLOR_LOG = discord.Color.from_rgb(52, 152, 219)   # azul registro
 # =========================
 # VIEW CON BOTONES
 # =========================
-class ExitView(discord.ui.View):
-    def __init__(self, user_id: int):
-        super().__init__(timeout=900)  # Discord limita la vida de componentes a unos minutos
-        self.user_id = user_id
+class FichajeView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)  # para que no expire
 
-    @discord.ui.button(label="Salir", style=discord.ButtonStyle.danger)
-    async def salir(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
+    @discord.ui.button(label="Entrar", style=discord.ButtonStyle.success, custom_id="fichaje_entrar")
+    async def entrar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user_id = interaction.user.id
+        now = datetime.now(timezone.utc)
+
+        existing = get_open_shift(user_id)
+        if existing:
             em = discord.Embed(
-                title="⛔ No es tu turno",
-                description="Este botón es solo para la persona que inició el fichaje.",
-                color=COLOR_ALERTA,
+                title="⚠️ Ya tienes un turno activo",
+                description=(
+                    "Tienes una sesión **en curso**.\n\n"
+                    "Pulsa **Salir** para cerrarla antes de iniciar otra."
+                ),
+                color=COLOR_AVISO,
             )
             em.set_footer(text="Solo tú ves este mensaje")
             await interaction.response.send_message(embed=em, ephemeral=True)
             return
 
+        open_shift(user_id, now.isoformat())
+
+        em = discord.Embed(
+            title="🟢 Turno iniciado",
+            description=(
+                f"**Entrada registrada:** `{now.strftime('%H:%M:%S')}` **UTC**\n\n"
+                "Cuando termines, pulsa **Salir** para guardar el registro."
+            ),
+            color=COLOR_OK,
+        )
+        em.set_footer(text="¡Buen turno!")
+        await interaction.response.send_message(embed=em, ephemeral=True)
+
+    @discord.ui.button(label="Salir", style=discord.ButtonStyle.danger, custom_id="fichaje_salir")
+    async def salir(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user_id = interaction.user.id
         now = datetime.now(timezone.utc)
-        existing = get_open_shift(self.user_id)
+
+        existing = get_open_shift(user_id)
         if not existing:
             em = discord.Embed(
                 title="🟡 No hay turno abierto",
-                description="No se encontró un turno activo para ti.",
+                description=(
+                    "No tienes ninguna sesión activa en este momento.\n\n"
+                    "Pulsa **Entrar** cuando empieces a trabajar."
+                ),
                 color=COLOR_AVISO,
             )
             em.set_footer(text="Solo tú ves este mensaje")
-            await interaction.response.edit_message(embed=em, view=None)
+            await interaction.response.send_message(embed=em, ephemeral=True)
             return
 
         start_time = datetime.fromisoformat(existing[0])
         duration = now - start_time
         total_seconds = int(duration.total_seconds())
+
         horas, minutos, segundos = format_duration(total_seconds)
 
-        # Cerrar turno antes de enviar/registrar para mantener consistencia
-        close_shift(self.user_id)
+        # borrar turno abierto
+        close_shift(user_id)
 
         # buscar canal de logs
         log_channel = interaction.client.get_channel(LOG_CHANNEL_ID)
@@ -110,11 +137,11 @@ class ExitView(discord.ui.View):
                 title="❌ Canal de registro no encontrado",
                 description=(
                     "No se pudo localizar el canal de logs.\n"
-                    "Revisa que **LOG_CHANNEL_ID** sea correcto."
+                    "Revisa que **LOG_CHANNEL_ID** sea correcto en la configuración del bot."
                 ),
                 color=COLOR_ALERTA,
             )
-            await interaction.response.edit_message(embed=em, view=None)
+            await interaction.response.send_message(embed=em, ephemeral=True)
             return
 
         embed = discord.Embed(
@@ -155,54 +182,7 @@ class ExitView(discord.ui.View):
             color=COLOR_OK,
         )
         em_done.set_footer(text="Solo tú ves este mensaje")
-
-        # Quitamos el botón del mensaje efímero
-        await interaction.response.edit_message(embed=em_done, view=None)
-
-
-class FichajeView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)  # para que no expire
-
-    @discord.ui.button(label="Entrar", style=discord.ButtonStyle.success, custom_id="fichaje_entrar")
-    async def entrar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        user_id = interaction.user.id
-        now = datetime.now(timezone.utc)
-
-        existing = get_open_shift(user_id)
-        if existing:
-            em = discord.Embed(
-                title="⚠️ Ya tienes un turno activo",
-                description=(
-                    "Tienes una sesión **en curso**.\n\n"
-                    "Usa el botón **Salir** que aparece en este mensaje para cerrarla."
-                ),
-                color=COLOR_AVISO,
-            )
-            em.set_footer(text="Solo tú ves este mensaje")
-            await interaction.response.send_message(
-                embed=em,
-                ephemeral=True,
-                view=ExitView(user_id),
-            )
-            return
-
-        open_shift(user_id, now.isoformat())
-
-        em = discord.Embed(
-            title="🟢 Turno iniciado",
-            description=(
-                f"**Entrada registrada:** `{now.strftime('%H:%M:%S')}` **UTC**\n\n"
-                "Cuando termines, pulsa **Salir** en este mensaje para guardar el registro."
-            ),
-            color=COLOR_OK,
-        )
-        em.set_footer(text="¡Buen turno!")
-        await interaction.response.send_message(
-            embed=em,
-            ephemeral=True,
-            view=ExitView(user_id),
-        )
+        await interaction.response.send_message(embed=em_done, ephemeral=True)
 
 # =========================
 # EVENTOS
@@ -232,7 +212,7 @@ async def panel_fichaje(interaction: discord.Interaction):
         description=(
             "**Registra tu jornada con los botones de abajo.**\n\n"
             "🟢 **Entrar** — Marca el **inicio** de tu turno.\n"
-            "Tras iniciarlo, te aparecerá un mensaje temporal con el botón **Salir**.\n\n"
+            "🔴 **Salir** — Marca el **fin** y guarda el tiempo en el canal de registros.\n\n"
             "━━━━━━━━━━━━━━━━━━\n"
             "*Cierra siempre el turno al terminar para que quede bien el registro.*"
         ),
