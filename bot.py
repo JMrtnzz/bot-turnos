@@ -9,8 +9,8 @@ from datetime import datetime, timezone
 # =========================
 import os
 TOKEN = os.getenv("TOKEN")
-GUILD_ID = 123456789012345678   # opcional, para sincronizar más rápido los comandos
-LOG_CHANNEL_ID = 123456789012345678  # canal donde se enviarán los turnos
+GUILD_ID = 1277376211005214921   # opcional, para sincronizar más rápido los comandos
+LOG_CHANNEL_ID = 1487552350456381792  # canal donde se enviarán los turnos
 
 # =========================
 # BASE DE DATOS
