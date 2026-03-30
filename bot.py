@@ -56,6 +56,13 @@ def format_duration(seconds: int):
     segundos = seconds % 60
     return horas, minutos, segundos
 
+# Colores para embeds (coherentes en todo el bot)
+COLOR_PANEL = discord.Color.from_rgb(88, 101, 242)   # blurple
+COLOR_OK = discord.Color.from_rgb(46, 204, 113)      # verde éxito
+COLOR_AVISO = discord.Color.from_rgb(241, 196, 15)   # ámbar
+COLOR_ALERTA = discord.Color.from_rgb(231, 76, 60)   # rojo suave
+COLOR_LOG = discord.Color.from_rgb(52, 152, 219)   # azul registro
+
 # =========================
 # VIEW CON BOTONES
 # =========================
@@ -70,18 +77,30 @@ class FichajeView(discord.ui.View):
 
         existing = get_open_shift(user_id)
         if existing:
-            await interaction.response.send_message(
-                "Ya tienes un turno iniciado. Primero debes pulsar **Salir**.",
-                ephemeral=True
+            em = discord.Embed(
+                title="⚠️ Ya tienes un turno activo",
+                description=(
+                    "Tienes una sesión **en curso**.\n\n"
+                    "Pulsa **Salir** para cerrarla antes de iniciar otra."
+                ),
+                color=COLOR_AVISO,
             )
+            em.set_footer(text="Solo tú ves este mensaje")
+            await interaction.response.send_message(embed=em, ephemeral=True)
             return
 
         open_shift(user_id, now.isoformat())
 
-        await interaction.response.send_message(
-            f"✅ Turno iniciado a las **{now.strftime('%H:%M:%S UTC')}**",
-            ephemeral=True
+        em = discord.Embed(
+            title="🟢 Turno iniciado",
+            description=(
+                f"**Entrada registrada:** `{now.strftime('%H:%M:%S')}` **UTC**\n\n"
+                "Cuando termines, pulsa **Salir** para guardar el registro."
+            ),
+            color=COLOR_OK,
         )
+        em.set_footer(text="¡Buen turno!")
+        await interaction.response.send_message(embed=em, ephemeral=True)
 
     @discord.ui.button(label="Salir", style=discord.ButtonStyle.danger, custom_id="fichaje_salir")
     async def salir(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -90,10 +109,16 @@ class FichajeView(discord.ui.View):
 
         existing = get_open_shift(user_id)
         if not existing:
-            await interaction.response.send_message(
-                "No tienes ningún turno iniciado.",
-                ephemeral=True
+            em = discord.Embed(
+                title="🟡 No hay turno abierto",
+                description=(
+                    "No tienes ninguna sesión activa en este momento.\n\n"
+                    "Pulsa **Entrar** cuando empieces a trabajar."
+                ),
+                color=COLOR_AVISO,
             )
+            em.set_footer(text="Solo tú ves este mensaje")
+            await interaction.response.send_message(embed=em, ephemeral=True)
             return
 
         start_time = datetime.fromisoformat(existing[0])
@@ -108,32 +133,56 @@ class FichajeView(discord.ui.View):
         # buscar canal de logs
         log_channel = interaction.client.get_channel(LOG_CHANNEL_ID)
         if log_channel is None:
-            await interaction.response.send_message(
-                "No encontré el canal de logs. Revisa el LOG_CHANNEL_ID.",
-                ephemeral=True
+            em = discord.Embed(
+                title="❌ Canal de registro no encontrado",
+                description=(
+                    "No se pudo localizar el canal de logs.\n"
+                    "Revisa que **LOG_CHANNEL_ID** sea correcto en la configuración del bot."
+                ),
+                color=COLOR_ALERTA,
             )
+            await interaction.response.send_message(embed=em, ephemeral=True)
             return
 
         embed = discord.Embed(
-            title="Ficha de horas",
-            color=discord.Color.blue(),
-            timestamp=now
+            title="📋 Registro de turno",
+            description=f"{interaction.user.mention} · **Turno finalizado**",
+            color=COLOR_LOG,
+            timestamp=now,
         )
-        embed.add_field(name="Usuario", value=f"{interaction.user.mention} (`{interaction.user}`)", inline=False)
-        embed.add_field(name="Hora de entrada", value=start_time.strftime("%Y-%m-%d %H:%M:%S UTC"), inline=False)
-        embed.add_field(name="Hora de salida", value=now.strftime("%Y-%m-%d %H:%M:%S UTC"), inline=False)
+        embed.set_author(
+            name=interaction.user.display_name,
+            icon_url=interaction.user.display_avatar.url,
+        )
         embed.add_field(
-            name="Tiempo total",
-            value=f"**{horas}h {minutos}m {segundos}s**",
-            inline=False
+            name="🕐 Entrada",
+            value=f"`{start_time.strftime('%Y-%m-%d %H:%M:%S')}` UTC",
+            inline=True,
         )
+        embed.add_field(
+            name="🕐 Salida",
+            value=f"`{now.strftime('%Y-%m-%d %H:%M:%S')}` UTC",
+            inline=True,
+        )
+        embed.add_field(
+            name="⏱️ Tiempo total",
+            value=f"**`{horas}h`** **`{minutos}m`** **`{segundos}s`**",
+            inline=False,
+        )
+        embed.set_footer(text="Fichaje automático")
 
         await log_channel.send(embed=embed)
 
-        await interaction.response.send_message(
-            f"✅ Turno cerrado. Total trabajado: **{horas}h {minutos}m {segundos}s**",
-            ephemeral=True
+        em_done = discord.Embed(
+            title="✅ Turno cerrado correctamente",
+            description=(
+                f"**Duración:** `{horas}h {minutos}m {segundos}s`\n\n"
+                "El registro quedó guardado en el canal de **logs**."
+            ),
+            color=COLOR_OK,
         )
+        em_done.set_footer(text="Solo tú ves este mensaje")
+        await interaction.response.send_message(embed=em_done, ephemeral=True)
 
 # =========================
 # EVENTOS
@@ -159,10 +208,22 @@ async def on_ready():
 @app_commands.checks.has_permissions(administrator=True)
 async def panel_fichaje(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="Control de Turnos",
-        description="Pulsa **Entrar** para iniciar tu turno y **Salir** para finalizarlo.",
-        color=discord.Color.green()
+        title="⏱️ Panel de fichaje",
+        description=(
+            "**Registra tu jornada con los botones de abajo.**\n\n"
+            "🟢 **Entrar** — Marca el **inicio** de tu turno.\n"
+            "🔴 **Salir** — Marca el **fin** y guarda el tiempo en el canal de registros.\n\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "*Cierra siempre el turno al terminar para que quede bien el registro.*"
+        ),
+        color=COLOR_PANEL,
     )
+    embed.set_thumbnail(url=interaction.client.user.display_avatar.url)
+    footer_text = "Sistema de turnos · Las confirmaciones son privadas (solo las ves tú)"
+    if interaction.guild and interaction.guild.icon:
+        embed.set_footer(text=footer_text, icon_url=interaction.guild.icon.url)
+    else:
+        embed.set_footer(text=footer_text)
     await interaction.response.send_message(embed=embed, view=FichajeView())
 
 # =========================
