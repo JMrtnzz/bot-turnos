@@ -8,9 +8,6 @@ from datetime import datetime, timezone
 # CONFIGURACIÓN
 # =========================
 import os
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
-
 TOKEN = os.getenv("TOKEN")
 GUILD_ID = 1277376211005214921   # opcional, para sincronizar más rápido los comandos
 LOG_CHANNEL_ID = 1487552350456381792  # canal donde se enviarán los turnos
@@ -33,8 +30,7 @@ conn.commit()
 # INTENTS
 # =========================
 intents = discord.Intents.default()
-# Sin prefijo: solo slash commands (evita el aviso de Message Content Intent en hosts como Render)
-bot = commands.Bot(command_prefix=[], intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 # =========================
 # FUNCIONES AUXILIARES
@@ -253,30 +249,4 @@ async def panel_fichaje(interaction: discord.Interaction):
 # =========================
 # EJECUCIÓN
 # =========================
-def _start_render_health_port():
-    """Render (Web Service) inyecta PORT y comprueba que haya un socket abierto."""
-    raw = os.environ.get("PORT")
-    if not raw:
-        return
-    port = int(raw)
-
-    class _HealthHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header("Content-type", "text/plain; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(b"ok")
-
-        def log_message(self, format, *args):
-            pass
-
-    def _serve():
-        server = HTTPServer(("0.0.0.0", port), _HealthHandler)
-        server.serve_forever()
-
-    threading.Thread(target=_serve, daemon=True, name="render-health").start()
-    print(f"Health check HTTP en 0.0.0.0:{port} (Render)")
-
-
-_start_render_health_port()
 bot.run(TOKEN)
