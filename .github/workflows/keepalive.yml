@@ -1,0 +1,17 @@
+name: Keep Render Awake
+
+on:
+  schedule:
+    # Cada 5 minutos
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render health endpoint
+        run: |
+          PING_URL="https://bot-turnos-4fd5.onrender.com/health"
+          curl -fsS --max-time 20 "$PING_URL" > /dev/null
+          echo "Ping OK: $PING_URL"

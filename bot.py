@@ -51,18 +51,33 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # Render exige que el proceso se "bind-ee" a al menos un puerto.
 # Como este bot no necesita servir páginas, exponemos un endpoint mínimo de salud.
 async def http_health_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    request_head = b""
     try:
         # Leemos hasta el final de headers HTTP para no bloquear indefinidamente.
-        await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5)
+        request_head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5)
     except Exception:
-        # Si el cliente se corta o no envía headers completos, igual devolvemos OK.
-        pass
+        # Si no hay petición HTTP válida, cerramos en silencio.
+        writer.close()
+        with contextlib.suppress(Exception):
+            await writer.wait_closed()
+        return
 
-    body = b"OK"
+    # Parseo mínimo de la primera línea: "GET /path HTTP/1.1"
+    first_line = request_head.split(b"\r\n", 1)[0]
+    parts = first_line.split(b" ")
+    path = parts[1].decode("utf-8", errors="ignore") if len(parts) >= 2 else "/"
+
+    if path in ("/", "/health"):
+        body = b"OK"
+        status = b"200 OK"
+    else:
+        body = b"Not Found"
+        status = b"404 Not Found"
+
     response = (
-        b"HTTP/1.1 200 OK\r\n"
+        b"HTTP/1.1 " + status + b"\r\n"
         b"Content-Type: text/plain; charset=utf-8\r\n"
-        b"Content-Length: 2\r\n"
+        b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n"
         b"\r\n"
         + body
     )
